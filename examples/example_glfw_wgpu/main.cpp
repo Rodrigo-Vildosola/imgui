@@ -18,7 +18,7 @@
 #include <emscripten/html5.h>
 #include <emscripten/html5_webgpu.h>
 #else
-#include <webgpu/webgpu_glfw.h>
+#include <glfw3webgpu.h>
 #endif
 
 #include <GLFW/glfw3.h>
@@ -31,35 +31,23 @@
 #endif
 
 // Global WebGPU required states
-static WGPUInstance      wgpu_instance = nullptr;
-static WGPUDevice        wgpu_device = nullptr;
-static WGPUSurface       wgpu_surface = nullptr;
-static WGPUTextureFormat wgpu_preferred_fmt = WGPUTextureFormat_RGBA8Unorm;
-static WGPUSwapChain     wgpu_swap_chain = nullptr;
+static wgpu::Instance      wgpu_instance = nullptr;
+static wgpu::Device        wgpu_device = nullptr;
+static wgpu::Surface       wgpu_surface = nullptr;
+static wgpu::TextureFormat wgpu_preferred_fmt = wgpu::TextureFormat::RGBA8Unorm;
+static wgpu::SurfaceConfiguration wgpu_surface_config = {};
+
+// static WGPUSwapChain     wgpu_swap_chain = nullptr;
 static int               wgpu_swap_chain_width = 1280;
 static int               wgpu_swap_chain_height = 800;
 
 // Forward declarations
 static bool InitWGPU(GLFWwindow* window);
-static void CreateSwapChain(int width, int height);
+// static void CreateSwapChain(int width, int height);
 
 static void glfw_error_callback(int error, const char* description)
 {
     printf("GLFW Error %d: %s\n", error, description);
-}
-
-static void wgpu_error_callback(WGPUErrorType error_type, const char* message, void*)
-{
-    const char* error_type_lbl = "";
-    switch (error_type)
-    {
-    case WGPUErrorType_Validation:  error_type_lbl = "Validation"; break;
-    case WGPUErrorType_OutOfMemory: error_type_lbl = "Out of memory"; break;
-    case WGPUErrorType_Unknown:     error_type_lbl = "Unknown"; break;
-    case WGPUErrorType_DeviceLost:  error_type_lbl = "Device lost"; break;
-    default:                        error_type_lbl = "Unknown";
-    }
-    printf("%s error: %s\n", error_type_lbl, message);
 }
 
 // Main code
@@ -84,7 +72,7 @@ int main(int, char**)
         glfwTerminate();
         return 1;
     }
-    CreateSwapChain(wgpu_swap_chain_width, wgpu_swap_chain_height);
+    // CreateSwapChain(wgpu_swap_chain_width, wgpu_swap_chain_height);
     glfwShowWindow(window);
 
     // Setup Dear ImGui context
@@ -105,9 +93,9 @@ int main(int, char**)
     ImGui_ImplGlfw_InstallEmscriptenCallbacks(window, "#canvas");
 #endif
     ImGui_ImplWGPU_InitInfo init_info;
-    init_info.Device = wgpu_device;
+    init_info.Device = wgpu_device.Get();
     init_info.NumFramesInFlight = 3;
-    init_info.RenderTargetFormat = wgpu_preferred_fmt;
+    init_info.RenderTargetFormat = (WGPUTextureFormat) wgpu_preferred_fmt;
     init_info.DepthStencilFormat = WGPUTextureFormat_Undefined;
     ImGui_ImplWGPU_Init(&init_info);
 
@@ -164,7 +152,7 @@ int main(int, char**)
         if (width != wgpu_swap_chain_width || height != wgpu_swap_chain_height)
         {
             ImGui_ImplWGPU_InvalidateDeviceObjects();
-            CreateSwapChain(width, height);
+            // CreateSwapChain(width, height);
             ImGui_ImplWGPU_CreateDeviceObjects();
         }
 
@@ -215,41 +203,50 @@ int main(int, char**)
 
 #ifndef __EMSCRIPTEN__
         // Tick needs to be called in Dawn to display validation errors
-        wgpuDeviceTick(wgpu_device);
+        wgpu_device.Tick();
 #endif
+        wgpu::SurfaceTexture st;
+        wgpu_surface.GetCurrentTexture(&st);
+        if (st.status != wgpu::SurfaceGetCurrentTextureStatus::SuccessOptimal &&
+            st.status != wgpu::SurfaceGetCurrentTextureStatus::SuccessSuboptimal) {
+            // handle lost/suboptimal (reconfigure if needed)
+        }
+        wgpu::TextureView view = st.texture.CreateView();
 
-        WGPURenderPassColorAttachment color_attachments = {};
+
+        wgpu::RenderPassColorAttachment color_attachments = {};
         color_attachments.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;
-        color_attachments.loadOp = WGPULoadOp_Clear;
-        color_attachments.storeOp = WGPUStoreOp_Store;
+        color_attachments.loadOp = wgpu::LoadOp::Clear;
+        color_attachments.storeOp = wgpu::StoreOp::Store;
         color_attachments.clearValue = { clear_color.x * clear_color.w, clear_color.y * clear_color.w, clear_color.z * clear_color.w, clear_color.w };
-        color_attachments.view = wgpuSwapChainGetCurrentTextureView(wgpu_swap_chain);
+        color_attachments.view = view;
 
-        WGPURenderPassDescriptor render_pass_desc = {};
+        wgpu::RenderPassDescriptor render_pass_desc = {};
         render_pass_desc.colorAttachmentCount = 1;
         render_pass_desc.colorAttachments = &color_attachments;
         render_pass_desc.depthStencilAttachment = nullptr;
 
-        WGPUCommandEncoderDescriptor enc_desc = {};
-        WGPUCommandEncoder encoder = wgpuDeviceCreateCommandEncoder(wgpu_device, &enc_desc);
+        wgpu::CommandEncoderDescriptor enc_desc = {};
+        wgpu::CommandEncoder encoder = wgpu_device.CreateCommandEncoder(&enc_desc);
 
-        WGPURenderPassEncoder pass = wgpuCommandEncoderBeginRenderPass(encoder, &render_pass_desc);
-        ImGui_ImplWGPU_RenderDrawData(ImGui::GetDrawData(), pass);
-        wgpuRenderPassEncoderEnd(pass);
+        wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&render_pass_desc);
+        ImGui_ImplWGPU_RenderDrawData(ImGui::GetDrawData(), pass.Get());
 
-        WGPUCommandBufferDescriptor cmd_buffer_desc = {};
-        WGPUCommandBuffer cmd_buffer = wgpuCommandEncoderFinish(encoder, &cmd_buffer_desc);
-        WGPUQueue queue = wgpuDeviceGetQueue(wgpu_device);
-        wgpuQueueSubmit(queue, 1, &cmd_buffer);
+        pass.End();
+
+        wgpu::CommandBufferDescriptor cmd_buffer_desc = {};
+        wgpu::CommandBuffer cmd_buffer = encoder.Finish(&cmd_buffer_desc);
+        wgpu::Queue queue = wgpu_device.GetQueue();
+        queue.Submit(1, &cmd_buffer);
 
 #ifndef __EMSCRIPTEN__
-        wgpuSwapChainPresent(wgpu_swap_chain);
+    wgpu_surface.Present();
 #endif
 
-        wgpuTextureViewRelease(color_attachments.view);
-        wgpuRenderPassEncoderRelease(pass);
-        wgpuCommandEncoderRelease(encoder);
-        wgpuCommandBufferRelease(cmd_buffer);
+        // wgpuTextureViewRelease(color_attachments.view);
+        // wgpuRenderPassEncoderRelease(pass);
+        // wgpuCommandEncoderRelease(encoder);
+        // wgpuCommandBufferRelease(cmd_buffer);
     }
 #ifdef __EMSCRIPTEN__
     EMSCRIPTEN_MAINLOOP_END;
@@ -266,49 +263,83 @@ int main(int, char**)
     return 0;
 }
 
-#ifndef __EMSCRIPTEN__
-static WGPUAdapter RequestAdapter(WGPUInstance instance)
-{
-    auto onAdapterRequestEnded = [](WGPURequestAdapterStatus status, WGPUAdapter adapter, const char* message, void* pUserData)
-    {
-        if (status == WGPURequestAdapterStatus_Success)
-            *(WGPUAdapter*)(pUserData) = adapter;
-        else
-            printf("Could not get WebGPU adapter: %s\n", message);
+template<typename T>
+struct request_userdata {
+    T    result{};
+    bool request_ended = false;
 };
-    WGPUAdapter adapter;
-    wgpuInstanceRequestAdapter(instance, nullptr, onAdapterRequestEnded, (void*)&adapter);
-    return adapter;
-}
-
-static WGPUDevice RequestDevice(WGPUAdapter& adapter)
-{
-    auto onDeviceRequestEnded = [](WGPURequestDeviceStatus status, WGPUDevice device, const char* message, void* pUserData)
-    {
-        if (status == WGPURequestDeviceStatus_Success)
-            *(WGPUDevice*)(pUserData) = device;
-        else
-            printf("Could not get WebGPU device: %s\n", message);
-    };
-    WGPUDevice device;
-    wgpuAdapterRequestDevice(adapter, nullptr, onDeviceRequestEnded, (void*)&device);
-    return device;
-}
-#endif
 
 static bool InitWGPU(GLFWwindow* window)
 {
-    wgpu::Instance instance = wgpuCreateInstance(nullptr);
+    // 1. Instance
+    wgpu::InstanceDescriptor desc = {};
+    desc.nextInChain = nullptr;
+    wgpu::Instance instance = wgpu::CreateInstance(&desc);
+    if (!instance) return false;
 
 #ifdef __EMSCRIPTEN__
     wgpu_device = emscripten_webgpu_get_device();
     if (!wgpu_device)
         return false;
 #else
-    WGPUAdapter adapter = RequestAdapter(instance.Get());
-    if (!adapter)
-        return false;
-    wgpu_device = RequestDevice(adapter);
+    // 2. Request adapter
+    request_userdata<wgpu::Adapter> adapter_data;
+
+    instance.RequestAdapter(
+        nullptr,
+        wgpu::CallbackMode::AllowSpontaneous,
+        [&adapter_data](wgpu::RequestAdapterStatus status, wgpu::Adapter adapter, wgpu::StringView message) {
+            if (status == wgpu::RequestAdapterStatus::Success) {
+                adapter_data.result = adapter;
+            } else {
+                printf("Could not get WebGPU adapter: %.*s\n", (int)message.length, message.data);
+            }
+            adapter_data.request_ended = true;
+        }
+    );
+
+    // Spin until adapter request completes
+    while (!adapter_data.request_ended) {
+        instance.ProcessEvents();
+    }
+
+    wgpu::Adapter adapter = adapter_data.result;
+    if (!adapter) return false;
+
+    // 3. Request device
+    request_userdata<wgpu::Device> device_data;
+
+    wgpu::DeviceDescriptor device_desc = {};
+    device_desc.label = "ImGui Device";
+    device_desc.defaultQueue.label = "Main Queue";
+    device_desc.SetUncapturedErrorCallback(
+        [](wgpu::Device const&, wgpu::ErrorType type, wgpu::StringView message) {
+            printf("Uncaptured error %d: %.*s\n", (int)type, (int)message.length, message.data);
+        }
+    );
+
+    adapter.RequestDevice(
+        &device_desc,
+        wgpu::CallbackMode::AllowSpontaneous,
+        [&device_data](wgpu::RequestDeviceStatus status, wgpu::Device device, wgpu::StringView message) {
+            if (status == wgpu::RequestDeviceStatus::Success) {
+                device_data.result = device;
+            } else {
+                printf("Could not get WebGPU device: %.*s\n", (int)message.length, message.data);
+            }
+            device_data.request_ended = true;
+        }
+    );
+
+    // Spin until device request completes
+    while (!device_data.request_ended) {
+        instance.ProcessEvents();
+    }
+
+    wgpu::Device device = device_data.result;
+    if (!device) return false;
+
+    wgpu_device = device;
 #endif
 
 #ifdef __EMSCRIPTEN__
@@ -318,34 +349,50 @@ static bool InitWGPU(GLFWwindow* window)
     surface_desc.nextInChain = &html_surface_desc;
     wgpu::Surface surface = instance.CreateSurface(&surface_desc);
 
-    wgpu::Adapter adapter = {};
-    wgpu_preferred_fmt = (WGPUTextureFormat)surface.GetPreferredFormat(adapter);
+    wgpu::Adapter dummy;
+    wgpu_preferred_fmt = surface.GetPreferredFormat(dummy);
 #else
-    wgpu::Surface surface = wgpu::glfw::CreateSurfaceForWindow(instance, window);
-    if (!surface)
-        return false;
-    wgpu_preferred_fmt = WGPUTextureFormat_BGRA8Unorm;
+    // 4) Surface via GLFW
+    wgpu::Surface surface = glfwCreateWindowWGPUSurface(instance.Get(), window);
+    if (!surface) return false;
+
+    // 5) Choose preferred format from surface+adapter
+    wgpu_preferred_fmt = wgpu::TextureFormat::BGRA8Unorm;
+
+    // 6) Configure surface (replaces old swapchain)
+    int fbw = 0, fbh = 0;
+    glfwGetFramebufferSize(window, &fbw, &fbh);
+
+    wgpu_surface_config.device      = wgpu_device;
+    wgpu_surface_config.format      = wgpu_preferred_fmt;
+    wgpu_surface_config.usage       = wgpu::TextureUsage::RenderAttachment;
+    wgpu_surface_config.width       = (uint32_t)fbw;
+    wgpu_surface_config.height      = (uint32_t)fbh;
+    wgpu_surface_config.presentMode = wgpu::PresentMode::Fifo;
+    wgpu_surface_config.alphaMode   = wgpu::CompositeAlphaMode::Auto;
+
+    surface.Configure(&wgpu_surface_config);
 #endif
 
-    wgpu_instance = instance.MoveToCHandle();
-    wgpu_surface = surface.MoveToCHandle();
-
-    wgpuDeviceSetUncapturedErrorCallback(wgpu_device, wgpu_error_callback, nullptr);
+    // Store globals
+    wgpu_instance = instance;
+    wgpu_surface = surface;
 
     return true;
 }
 
-static void CreateSwapChain(int width, int height)
-{
-    if (wgpu_swap_chain)
-        wgpuSwapChainRelease(wgpu_swap_chain);
-    wgpu_swap_chain_width = width;
-    wgpu_swap_chain_height = height;
-    WGPUSwapChainDescriptor swap_chain_desc = {};
-    swap_chain_desc.usage = WGPUTextureUsage_RenderAttachment;
-    swap_chain_desc.format = wgpu_preferred_fmt;
-    swap_chain_desc.width = width;
-    swap_chain_desc.height = height;
-    swap_chain_desc.presentMode = WGPUPresentMode_Fifo;
-    wgpu_swap_chain = wgpuDeviceCreateSwapChain(wgpu_device, wgpu_surface, &swap_chain_desc);
-}
+
+// static void CreateSwapChain(int width, int height)
+// {
+//     if (wgpu_swap_chain)
+//         wgpuSwapChainRelease(wgpu_swap_chain);
+//     wgpu_swap_chain_width = width;
+//     wgpu_swap_chain_height = height;
+//     WGPUSwapChainDescriptor swap_chain_desc = {};
+//     swap_chain_desc.usage = WGPUTextureUsage_RenderAttachment;
+//     swap_chain_desc.format = wgpu_preferred_fmt;
+//     swap_chain_desc.width = width;
+//     swap_chain_desc.height = height;
+//     swap_chain_desc.presentMode = WGPUPresentMode_Fifo;
+//     wgpu_swap_chain = wgpuDeviceCreateSwapChain(wgpu_device, wgpu_surface, &swap_chain_desc);
+// }
